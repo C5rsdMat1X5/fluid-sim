@@ -1,0 +1,16 @@
+[
+{
+  "directory": "/Users/matias/code/c-c++/fluid-sim",
+  "arguments": ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++", "-c", "-pipe", "-DIBOutlet=__attribute__((iboutlet))", "-DIBOutletCollection(ClassName)=__attribute__((iboutletcollection(ClassName)))", "-DIBAction=void)__attribute__((ibaction)", "-Qunused-arguments", "-target", "arm64-apple-macos26.5", "-isysroot", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk", "-fobjc-arc", "-fvisibility=hidden", "-O3", "-std=c++17", "-Iinclude", "-framework", "Metal", "-framework", "QuartzCore", "-framework", "AppKit", "-framework", "Foundation", "-framework", "CoreFoundation", "-o", "build/.objs/fluid-sim/macosx/arm64/release/src/window.mm.o", "src/window.mm"],
+  "file": "src/window.mm"
+},
+{
+  "directory": "/Users/matias/code/c-c++/fluid-sim",
+  "arguments": ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++", "-c", "-Qunused-arguments", "-target", "arm64-apple-macos26.5", "-isysroot", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++17", "-Iinclude", "-framework", "Metal", "-framework", "QuartzCore", "-framework", "AppKit", "-framework", "Foundation", "-framework", "CoreFoundation", "-DNDEBUG", "-o", "build/.objs/fluid-sim/macosx/arm64/release/src/main.cpp.o", "src/main.cpp"],
+  "file": "src/main.cpp"
+},
+{
+  "directory": "/Users/matias/code/c-c++/fluid-sim",
+  "arguments": ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++", "-c", "-Qunused-arguments", "-target", "arm64-apple-macos26.5", "-isysroot", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-std=c++17", "-Iinclude", "-framework", "Metal", "-framework", "QuartzCore", "-framework", "AppKit", "-framework", "Foundation", "-framework", "CoreFoundation", "-DNDEBUG", "-o", "build/.objs/fluid-sim/macosx/arm64/release/src/renderer.cpp.o", "src/renderer.cpp"],
+  "file": "src/renderer.cpp"
+}]
