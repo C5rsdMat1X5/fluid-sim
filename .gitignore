@@ -1,6 +1,9 @@
 # Xmake cache
 .xmake/
 build/
+.cland-format
+.vscode/
+.cache/
 
 # MacOS Cache
 .DS_Store
