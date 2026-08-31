@@ -20,7 +20,6 @@ int main() {
 
     Renderer renderer(device, layer);
     setRenderer(&renderer);
-    initSimulation(device, 1000);
 
     runApplication();
 

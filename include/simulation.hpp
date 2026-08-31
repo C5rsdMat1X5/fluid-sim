@@ -1,17 +1,19 @@
 #pragma once
 
 #include <Metal.hpp>
-#include <vector>
+#include <shader_types.hpp>
 
-struct Uniforms {
-    float radius;
-};
+constexpr int kParticleCount = 8192 / 2;
+constexpr int kSimulationIterations = 16;
+constexpr int kMaxTicksPerFrame = 4;
 
 struct RenderBuffers {
-    MTL::Buffer *vertexBuffer;
-    MTL::Buffer *indexBuffer;
-    Uniforms uniforms;
+    MTL::Buffer *particleBufferA;
+    MTL::Buffer *particleBufferB;
+    MTL::Buffer *uniformsBuffer;
+    uint32_t particleCount;
 };
 
-void initSimulation(MTL::Device *device, int particleCount);
-const std::vector<RenderBuffers> &stepSimulation();
+RenderBuffers initSimulation(MTL::Device *device, int particleCount);
+const RenderBuffers &stepSimulation();
+int simulationStepsToRun();

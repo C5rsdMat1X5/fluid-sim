@@ -80,7 +80,7 @@ void* createWindow()
     gLayer = [CAMetalLayer layer];
     CGFloat scale = [gWindow backingScaleFactor];
     gLayer.drawableSize = CGSizeMake(frame.size.width * scale, frame.size.height * scale);
-    gLayer.displaySyncEnabled = NO;
+    gLayer.displaySyncEnabled = YES;
 
     [gView setWantsLayer:YES];
     [gView setLayer:gLayer];

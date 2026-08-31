@@ -4,18 +4,22 @@
 #include <simulation.hpp>
 
 class Renderer {
-public:
-    Renderer(MTL::Device* device, CA::MetalLayer* layer);
+  public:
+    Renderer(MTL::Device *device, CA::MetalLayer *layer);
     ~Renderer();
 
-    void draw(MTL::Buffer* vertexBuffer, MTL::Buffer* indicesBuffer, Uniforms uniform);
+    void drawFrame();
 
-private:
-    MTL::Device* mDevice = nullptr;
-    MTL::CommandQueue* mCommandQueue = nullptr;
-    MTL::RenderPipelineState* mPipelineState = nullptr;
-    CA::MetalLayer* mLayer = nullptr;
+  private:
+    MTL::Device *mDevice = nullptr;
+    MTL::CommandQueue *mCommandQueue = nullptr;
+    MTL::RenderPipelineState *mPipelineState = nullptr;
+    MTL::ComputePipelineState *mComputePipelineState = nullptr;
+    CA::MetalLayer *mLayer = nullptr;
+
+    RenderBuffers mBuffers{};
+    bool mCurrentIsA = true;
 };
 
-void setRenderer(Renderer* renderer);
+void setRenderer(Renderer *renderer);
 void renderFrame();
