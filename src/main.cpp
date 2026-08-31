@@ -1,8 +1,6 @@
 #include <iostream>
 #include <renderer.hpp>
-
-void* createWindow();
-void runApplication();
+#include <window.hpp>
 
 int main() {
     MTL::Device* device = MTL::CreateSystemDefaultDevice();

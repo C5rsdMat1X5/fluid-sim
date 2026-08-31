@@ -4,17 +4,9 @@
 #include <cstring>
 #include <simulation.hpp>
 #include <vector>
-#include <window_state.hpp>
+#include <window.hpp>
 
 namespace {
-
-constexpr float kParticleRadius = 4.0f;
-constexpr float kCellSize = kParticleRadius * 2.0f;
-constexpr float kParticlePadding = 1.0f;
-constexpr float kMaxSpeed = 2500.0f;
-constexpr float kGravity = 98.1f;
-constexpr float kFixedDt = 1.0f / 60.0f;
-
 struct SimulationState {
     RenderBuffers buffers{};
     int particleCount = 0;
@@ -33,6 +25,35 @@ float getFrameDt() {
     gLastTime = now;
 
     return std::min(diff.count(), 0.1f);
+}
+
+int advanceFixedTimestep(float frameDt) {
+    gState.timeAccumulator += frameDt;
+
+    int ticks = 0;
+    while (gState.timeAccumulator >= kFixedDt && ticks < kMaxTicksPerFrame) {
+        gState.timeAccumulator -= kFixedDt;
+        ++ticks;
+    }
+    gState.simTime += static_cast<float>(ticks) * kFixedDt;
+    return ticks;
+}
+
+Uniforms buildUniforms() {
+    Uniforms uniforms{};
+    uniforms.radius = kParticleRadius;
+    uniforms.particleScale = {kParticleRadius / (0.5f * gWindowWidth),
+                              kParticleRadius / (0.5f * gWindowHeight)};
+    uniforms.subDt = kFixedDt / static_cast<float>(kSimulationIterations);
+    uniforms.gravity = kGravity;
+    uniforms.maxSpeed = kMaxSpeed;
+    uniforms.maxSpeedSqr = kMaxSpeed * kMaxSpeed;
+    uniforms.gridSize = kCellSize;
+    uniforms.time = gState.simTime;
+    uniforms.numParticles = gState.particleCount;
+    uniforms.windowWidth = static_cast<int>(gWindowWidth);
+    uniforms.windowHeight = static_cast<int>(gWindowHeight);
+    return uniforms;
 }
 
 std::vector<Particle> layoutParticleGrid(int particleCount) {
@@ -84,31 +105,10 @@ RenderBuffers initSimulation(MTL::Device *device, int particleCount) {
 }
 
 const RenderBuffers &stepSimulation() {
-    const float frameDt = getFrameDt();
-    gState.timeAccumulator += frameDt;
-
-    int ticks = 0;
-    while (gState.timeAccumulator >= kFixedDt && ticks < kMaxTicksPerFrame) {
-        gState.timeAccumulator -= kFixedDt;
-        ++ticks;
-    }
+    const int ticks = advanceFixedTimestep(getFrameDt());
     gState.stepsToRun = ticks * kSimulationIterations;
-    gState.simTime += static_cast<float>(ticks) * kFixedDt;
 
-    Uniforms uniforms{};
-    uniforms.radius = kParticleRadius;
-    uniforms.particleScale = {kParticleRadius / (0.5f * gWindowWidth),
-                              kParticleRadius / (0.5f * gWindowHeight)};
-    uniforms.subDt = kFixedDt / static_cast<float>(kSimulationIterations);
-    uniforms.gravity = kGravity;
-    uniforms.maxSpeed = kMaxSpeed;
-    uniforms.maxSpeedSqr = kMaxSpeed * kMaxSpeed;
-    uniforms.gridSize = kCellSize;
-    uniforms.time = gState.simTime;
-    uniforms.numParticles = gState.particleCount;
-    uniforms.windowWidth = static_cast<int>(gWindowWidth);
-    uniforms.windowHeight = static_cast<int>(gWindowHeight);
-
+    const Uniforms uniforms = buildUniforms();
     std::memcpy(gState.buffers.uniformsBuffer->contents(), &uniforms,
                 sizeof(Uniforms));
 

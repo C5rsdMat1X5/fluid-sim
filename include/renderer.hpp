@@ -11,6 +11,13 @@ class Renderer {
     void drawFrame();
 
   private:
+    void createRenderPipeline(MTL::Library *library);
+    void createComputePipeline(MTL::Library *library);
+
+    void encodeComputePass(MTL::CommandBuffer *commandBuffer);
+    void encodeRenderPass(MTL::CommandBuffer *commandBuffer,
+                          CA::MetalDrawable *drawable);
+
     MTL::Device *mDevice = nullptr;
     MTL::CommandQueue *mCommandQueue = nullptr;
     MTL::RenderPipelineState *mPipelineState = nullptr;

@@ -3,8 +3,8 @@
 #define MTL_PRIVATE_IMPLEMENTATION
 #define MTLFX_PRIVATE_IMPLEMENTATION
 
-#include <algorithm>
 #include <Metal.hpp>
+#include <algorithm>
 #include <iostream>
 #include <renderer.hpp>
 
@@ -18,19 +18,25 @@ Renderer::Renderer(MTL::Device *device, CA::MetalLayer *layer)
         return;
     }
 
-    NS::Error *error = nullptr;
     MTL::Library *library = mDevice->newDefaultLibrary();
     if (library == nullptr) {
         std::cout << "Failed to load shader library\n";
         return;
     }
 
+    createRenderPipeline(library);
+    createComputePipeline(library);
+
+    mBuffers = initSimulation(device, kParticleCount);
+
+    library->release();
+}
+
+void Renderer::createRenderPipeline(MTL::Library *library) {
     MTL::Function *vertexFunction = library->newFunction(
         NS::String::string("vertex_main", NS::UTF8StringEncoding));
     MTL::Function *fragmentFunction = library->newFunction(
         NS::String::string("fragment_main", NS::UTF8StringEncoding));
-    MTL::Function *computeFunction = library->newFunction(
-        NS::String::string("compute_kernel", NS::UTF8StringEncoding));
 
     MTL::RenderPipelineDescriptor *descriptor =
         MTL::RenderPipelineDescriptor::alloc()->init();
@@ -42,29 +48,35 @@ Renderer::Renderer(MTL::Device *device, CA::MetalLayer *layer)
     color->setRgbBlendOperation(MTL::BlendOperationAdd);
     color->setAlphaBlendOperation(MTL::BlendOperationAdd);
     color->setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
-    color->setSourceAlphaBlendFactor(MTL::BlendFactorSourceAlpha);
+    color->setSourceAlphaBlendFactor(MTL::BlendFactorOne);
     color->setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
     color->setDestinationAlphaBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
 
+    NS::Error *error = nullptr;
     mPipelineState = mDevice->newRenderPipelineState(descriptor, &error);
     if (mPipelineState == nullptr) {
         std::cout << "Failed to create render pipeline state: "
                   << error->localizedDescription()->utf8String() << "\n";
     }
 
-    mComputePipelineState = mDevice->newComputePipelineState(computeFunction, &error);
+    vertexFunction->release();
+    fragmentFunction->release();
+    descriptor->release();
+}
+
+void Renderer::createComputePipeline(MTL::Library *library) {
+    MTL::Function *computeFunction = library->newFunction(
+        NS::String::string("compute_kernel", NS::UTF8StringEncoding));
+
+    NS::Error *error = nullptr;
+    mComputePipelineState =
+        mDevice->newComputePipelineState(computeFunction, &error);
     if (mComputePipelineState == nullptr) {
         std::cout << "Failed to create compute pipeline state: "
                   << error->localizedDescription()->utf8String() << "\n";
     }
 
-    mBuffers = initSimulation(device, kParticleCount);
-
-    vertexFunction->release();
-    fragmentFunction->release();
     computeFunction->release();
-    descriptor->release();
-    library->release();
 }
 
 Renderer::~Renderer() {
@@ -84,22 +96,7 @@ void renderFrame() {
     gRenderer->drawFrame();
 }
 
-void Renderer::drawFrame() {
-    if (!mLayer || !mPipelineState || !mComputePipelineState || !mBuffers.particleCount)
-        return;
-
-    mBuffers = stepSimulation();
-
-    NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
-
-    CA::MetalDrawable *drawable = mLayer->nextDrawable();
-    if (drawable == nullptr) {
-        pool->release();
-        return;
-    }
-
-    MTL::CommandBuffer *commandBuffer = mCommandQueue->commandBuffer();
-
+void Renderer::encodeComputePass(MTL::CommandBuffer *commandBuffer) {
     MTL::ComputePassDescriptor *cPass =
         MTL::ComputePassDescriptor::computePassDescriptor();
     MTL::ComputeCommandEncoder *computeEncoder =
@@ -111,22 +108,28 @@ void Renderer::drawFrame() {
     NS::UInteger threadGroupSize =
         mComputePipelineState->maxTotalThreadsPerThreadgroup();
     threadGroupSize = std::min<NS::UInteger>(threadGroupSize, 256);
-    threadGroupSize = std::min<NS::UInteger>(threadGroupSize, mBuffers.particleCount);
+    threadGroupSize =
+        std::min<NS::UInteger>(threadGroupSize, mBuffers.particleCount);
 
     const MTL::Size gridSize(mBuffers.particleCount, 1, 1);
     const MTL::Size groupSize(threadGroupSize, 1, 1);
 
     const int stepsToRun = simulationStepsToRun();
     for (int i = 0; i < stepsToRun; ++i) {
-        MTL::Buffer *inBuffer = mCurrentIsA ? mBuffers.particleBufferA : mBuffers.particleBufferB;
-        MTL::Buffer *outBuffer = mCurrentIsA ? mBuffers.particleBufferB : mBuffers.particleBufferA;
+        MTL::Buffer *inBuffer =
+            mCurrentIsA ? mBuffers.particleBufferA : mBuffers.particleBufferB;
+        MTL::Buffer *outBuffer =
+            mCurrentIsA ? mBuffers.particleBufferB : mBuffers.particleBufferA;
         computeEncoder->setBuffer(inBuffer, 0, 0);
         computeEncoder->setBuffer(outBuffer, 0, 1);
         computeEncoder->dispatchThreads(gridSize, groupSize);
         mCurrentIsA = !mCurrentIsA;
     }
     computeEncoder->endEncoding();
+}
 
+void Renderer::encodeRenderPass(MTL::CommandBuffer *commandBuffer,
+                                CA::MetalDrawable *drawable) {
     MTL::Buffer *latestParticles =
         mCurrentIsA ? mBuffers.particleBufferA : mBuffers.particleBufferB;
 
@@ -144,8 +147,30 @@ void Renderer::drawFrame() {
     encoder->setVertexBuffer(latestParticles, 0, 0);
     encoder->setVertexBuffer(mBuffers.uniformsBuffer, 0, 1);
 
-    encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, 0, 3, mBuffers.particleCount);
+    encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, 0, 3,
+                            mBuffers.particleCount);
     encoder->endEncoding();
+}
+
+void Renderer::drawFrame() {
+    if (!mLayer || !mPipelineState || !mComputePipelineState ||
+        !mBuffers.particleCount)
+        return;
+
+    mBuffers = stepSimulation();
+
+    NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
+
+    CA::MetalDrawable *drawable = mLayer->nextDrawable();
+    if (drawable == nullptr) {
+        pool->release();
+        return;
+    }
+
+    MTL::CommandBuffer *commandBuffer = mCommandQueue->commandBuffer();
+
+    encodeComputePass(commandBuffer);
+    encodeRenderPass(commandBuffer, drawable);
 
     commandBuffer->presentDrawable(drawable);
     commandBuffer->commit();
