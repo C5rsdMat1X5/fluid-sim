@@ -1,6 +1,5 @@
 #pragma once
 
-
 #ifdef __METAL_VERSION__
 using vec2 = float2;
 #else
@@ -8,21 +7,24 @@ using vec2 = float2;
 using vec2 = simd::float2;
 #endif
 
-struct Particle {
-    vec2 pos; 
-    vec2 vel; 
-};
-
 struct Uniforms {
-    float radius;
+
     vec2 particleScale;
+
+    float radius;
     float subDt;
+    float invDt;
     float gravity;
     float maxSpeed;
     float maxSpeedSqr;
-    float gridSize;
     float time;
+
+    float invCellSize;
+
     int numParticles;
+    int gridW;
+    int gridH;
+    int numCells;
     int windowWidth;
     int windowHeight;
 };

@@ -8,6 +8,10 @@
 #include <iostream>
 #include <renderer.hpp>
 
+namespace {
+constexpr NS::UInteger kScanGroupSize = 256;
+}
+
 static Renderer *gRenderer = nullptr;
 
 Renderer::Renderer(MTL::Device *device, CA::MetalLayer *layer)
@@ -64,26 +68,48 @@ void Renderer::createRenderPipeline(MTL::Library *library) {
     descriptor->release();
 }
 
-void Renderer::createComputePipeline(MTL::Library *library) {
-    MTL::Function *computeFunction = library->newFunction(
-        NS::String::string("compute_kernel", NS::UTF8StringEncoding));
+MTL::ComputePipelineState *Renderer::makeComputePipeline(MTL::Library *library,
+                                                         const char *name) {
+    MTL::Function *function =
+        library->newFunction(NS::String::string(name, NS::UTF8StringEncoding));
 
     NS::Error *error = nullptr;
-    mComputePipelineState =
-        mDevice->newComputePipelineState(computeFunction, &error);
-    if (mComputePipelineState == nullptr) {
-        std::cout << "Failed to create compute pipeline state: "
-                  << error->localizedDescription()->utf8String() << "\n";
+    MTL::ComputePipelineState *pipeline =
+        mDevice->newComputePipelineState(function, &error);
+    if (pipeline == nullptr) {
+        std::cout << "Failed to create compute pipeline state '" << name
+                  << "': " << error->localizedDescription()->utf8String()
+                  << "\n";
     }
 
-    computeFunction->release();
+    function->release();
+    return pipeline;
+}
+
+void Renderer::createComputePipeline(MTL::Library *library) {
+    mPredictPipeline = makeComputePipeline(library, "k_predict");
+    mScanLocalPipeline = makeComputePipeline(library, "k_scan_local");
+    mScanBlocksPipeline = makeComputePipeline(library, "k_scan_blocks");
+    mScanAddPipeline = makeComputePipeline(library, "k_scan_add");
+    mScatterPipeline = makeComputePipeline(library, "k_scatter");
+    mSolvePipeline = makeComputePipeline(library, "k_solve");
 }
 
 Renderer::~Renderer() {
     if (mPipelineState)
         mPipelineState->release();
-    if (mComputePipelineState)
-        mComputePipelineState->release();
+    if (mPredictPipeline)
+        mPredictPipeline->release();
+    if (mScanLocalPipeline)
+        mScanLocalPipeline->release();
+    if (mScanBlocksPipeline)
+        mScanBlocksPipeline->release();
+    if (mScanAddPipeline)
+        mScanAddPipeline->release();
+    if (mScatterPipeline)
+        mScatterPipeline->release();
+    if (mSolvePipeline)
+        mSolvePipeline->release();
     if (mCommandQueue)
         mCommandQueue->release();
 }
@@ -96,33 +122,91 @@ void renderFrame() {
     gRenderer->drawFrame();
 }
 
+void Renderer::encodeStep(MTL::ComputeCommandEncoder *encoder,
+                          bool currentIsA) {
+    MTL::Buffer *inPos = currentIsA ? mBuffers.posA : mBuffers.posB;
+    MTL::Buffer *inVel = currentIsA ? mBuffers.velA : mBuffers.velB;
+    MTL::Buffer *inId = currentIsA ? mBuffers.idA : mBuffers.idB;
+    MTL::Buffer *outPos = currentIsA ? mBuffers.posB : mBuffers.posA;
+    MTL::Buffer *outVel = currentIsA ? mBuffers.velB : mBuffers.velA;
+    MTL::Buffer *outId = currentIsA ? mBuffers.idB : mBuffers.idA;
+
+    const uint32_t n = mBuffers.particleCount;
+    const uint32_t histN = static_cast<uint32_t>(mBuffers.numCells + 1);
+    const uint32_t numBlocks = static_cast<uint32_t>(mBuffers.numScanBlocks);
+
+    auto particleGroupSize = [&](MTL::ComputePipelineState *pipeline) {
+        NS::UInteger size = pipeline->maxTotalThreadsPerThreadgroup();
+        size = std::min<NS::UInteger>(size, 256);
+        size = std::min<NS::UInteger>(size, n);
+        return MTL::Size(size, 1, 1);
+    };
+    const MTL::Size particleGrid(n, 1, 1);
+
+    encoder->setComputePipelineState(mPredictPipeline);
+    encoder->setBuffer(inPos, 0, 0);
+    encoder->setBuffer(inVel, 0, 1);
+    encoder->setBuffer(inId, 0, 2);
+    encoder->setBuffer(mBuffers.predPos, 0, 3);
+    encoder->setBuffer(mBuffers.cellOf, 0, 4);
+    encoder->setBuffer(mBuffers.counts, 0, 5);
+    encoder->setBuffer(mBuffers.uniformsBuffer, 0, 6);
+    encoder->dispatchThreads(particleGrid, particleGroupSize(mPredictPipeline));
+
+    const MTL::Size scanGroup(kScanGroupSize, 1, 1);
+    const NS::UInteger scanGroups =
+        (histN + kScanGroupSize - 1) / kScanGroupSize;
+
+    encoder->setComputePipelineState(mScanLocalPipeline);
+    encoder->setBuffer(mBuffers.counts, 0, 0);
+    encoder->setBuffer(mBuffers.cellStart, 0, 1);
+    encoder->setBuffer(mBuffers.blockSums, 0, 2);
+    encoder->setBytes(&histN, sizeof(histN), 3);
+    encoder->dispatchThreadgroups(MTL::Size(scanGroups, 1, 1), scanGroup);
+
+    encoder->setComputePipelineState(mScanBlocksPipeline);
+    encoder->setBuffer(mBuffers.blockSums, 0, 0);
+    encoder->setBytes(&numBlocks, sizeof(numBlocks), 1);
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), scanGroup);
+
+    encoder->setComputePipelineState(mScanAddPipeline);
+    encoder->setBuffer(mBuffers.cellStart, 0, 0);
+    encoder->setBuffer(mBuffers.blockSums, 0, 1);
+    encoder->setBytes(&histN, sizeof(histN), 2);
+    encoder->dispatchThreadgroups(MTL::Size(scanGroups, 1, 1), scanGroup);
+
+    encoder->setComputePipelineState(mScatterPipeline);
+    encoder->setBuffer(inPos, 0, 0);
+    encoder->setBuffer(mBuffers.predPos, 0, 1);
+    encoder->setBuffer(inId, 0, 2);
+    encoder->setBuffer(mBuffers.cellOf, 0, 3);
+    encoder->setBuffer(mBuffers.cellStart, 0, 4);
+    encoder->setBuffer(mBuffers.counts, 0, 5);
+    encoder->setBuffer(mBuffers.sortedOld, 0, 6);
+    encoder->setBuffer(mBuffers.sortedPred, 0, 7);
+    encoder->setBuffer(outId, 0, 8);
+    encoder->setBuffer(mBuffers.uniformsBuffer, 0, 9);
+    encoder->dispatchThreads(particleGrid, particleGroupSize(mScatterPipeline));
+
+    encoder->setComputePipelineState(mSolvePipeline);
+    encoder->setBuffer(mBuffers.sortedOld, 0, 0);
+    encoder->setBuffer(mBuffers.sortedPred, 0, 1);
+    encoder->setBuffer(mBuffers.cellStart, 0, 2);
+    encoder->setBuffer(outPos, 0, 3);
+    encoder->setBuffer(outVel, 0, 4);
+    encoder->setBuffer(mBuffers.uniformsBuffer, 0, 5);
+    encoder->dispatchThreads(particleGrid, particleGroupSize(mSolvePipeline));
+}
+
 void Renderer::encodeComputePass(MTL::CommandBuffer *commandBuffer) {
     MTL::ComputePassDescriptor *cPass =
         MTL::ComputePassDescriptor::computePassDescriptor();
     MTL::ComputeCommandEncoder *computeEncoder =
         commandBuffer->computeCommandEncoder(cPass);
 
-    computeEncoder->setComputePipelineState(mComputePipelineState);
-    computeEncoder->setBuffer(mBuffers.uniformsBuffer, 0, 2);
-
-    NS::UInteger threadGroupSize =
-        mComputePipelineState->maxTotalThreadsPerThreadgroup();
-    threadGroupSize = std::min<NS::UInteger>(threadGroupSize, 256);
-    threadGroupSize =
-        std::min<NS::UInteger>(threadGroupSize, mBuffers.particleCount);
-
-    const MTL::Size gridSize(mBuffers.particleCount, 1, 1);
-    const MTL::Size groupSize(threadGroupSize, 1, 1);
-
     const int stepsToRun = simulationStepsToRun();
     for (int i = 0; i < stepsToRun; ++i) {
-        MTL::Buffer *inBuffer =
-            mCurrentIsA ? mBuffers.particleBufferA : mBuffers.particleBufferB;
-        MTL::Buffer *outBuffer =
-            mCurrentIsA ? mBuffers.particleBufferB : mBuffers.particleBufferA;
-        computeEncoder->setBuffer(inBuffer, 0, 0);
-        computeEncoder->setBuffer(outBuffer, 0, 1);
-        computeEncoder->dispatchThreads(gridSize, groupSize);
+        encodeStep(computeEncoder, mCurrentIsA);
         mCurrentIsA = !mCurrentIsA;
     }
     computeEncoder->endEncoding();
@@ -130,8 +214,8 @@ void Renderer::encodeComputePass(MTL::CommandBuffer *commandBuffer) {
 
 void Renderer::encodeRenderPass(MTL::CommandBuffer *commandBuffer,
                                 CA::MetalDrawable *drawable) {
-    MTL::Buffer *latestParticles =
-        mCurrentIsA ? mBuffers.particleBufferA : mBuffers.particleBufferB;
+    MTL::Buffer *latestPos = mCurrentIsA ? mBuffers.posA : mBuffers.posB;
+    MTL::Buffer *latestVel = mCurrentIsA ? mBuffers.velA : mBuffers.velB;
 
     MTL::RenderPassDescriptor *pass =
         MTL::RenderPassDescriptor::renderPassDescriptor();
@@ -144,8 +228,9 @@ void Renderer::encodeRenderPass(MTL::CommandBuffer *commandBuffer,
         commandBuffer->renderCommandEncoder(pass);
 
     encoder->setRenderPipelineState(mPipelineState);
-    encoder->setVertexBuffer(latestParticles, 0, 0);
-    encoder->setVertexBuffer(mBuffers.uniformsBuffer, 0, 1);
+    encoder->setVertexBuffer(latestPos, 0, 0);
+    encoder->setVertexBuffer(latestVel, 0, 1);
+    encoder->setVertexBuffer(mBuffers.uniformsBuffer, 0, 2);
 
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, 0, 3,
                             mBuffers.particleCount);
@@ -153,7 +238,7 @@ void Renderer::encodeRenderPass(MTL::CommandBuffer *commandBuffer,
 }
 
 void Renderer::drawFrame() {
-    if (!mLayer || !mPipelineState || !mComputePipelineState ||
+    if (!mLayer || !mPipelineState || !mPredictPipeline || !mSolvePipeline ||
         !mBuffers.particleCount)
         return;
 
