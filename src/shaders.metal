@@ -16,7 +16,7 @@ constant float kSpeedColorScale = 0.45f;
 constant float kStiffness = 10000.0f;
 constant float kTargetDensity = 1.5f;
 constant float kPressureScale = 1000.0f;
-constant float kViscosityScale = 0.01f;
+constant float kViscosityScale = 5000.0f;
 
 constant float3 kRestColor = float3(0.38f, 0.40f, 0.98f);
 constant float3 kMotionColor = float3(1.00f, 0.40f, 0.45f);
@@ -348,7 +348,7 @@ kernel void k_solve(const device float2 *sortedOld [[buffer(0)]],
                       ? (collisionDist * rsqrt(corrLenSqr))
                       : 1.0f;
 
-    float2 pos = self + pressureAccel * (u.subDt * u.subDt) + correction + viscosityAccel;
+    float2 pos = self + pressureAccel * (u.subDt * u.subDt) + correction + viscosityAccel * (u.subDt * u.subDt);
 
     const float minX = radius;
     const float maxX = float(u.windowWidth) - radius;
