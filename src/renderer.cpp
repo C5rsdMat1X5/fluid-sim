@@ -92,6 +92,7 @@ void Renderer::createComputePipeline(MTL::Library *library) {
     mScanBlocksPipeline = makeComputePipeline(library, "k_scan_blocks");
     mScanAddPipeline = makeComputePipeline(library, "k_scan_add");
     mScatterPipeline = makeComputePipeline(library, "k_scatter");
+    mDensityPipeline = makeComputePipeline(library, "k_dens");
     mSolvePipeline = makeComputePipeline(library, "k_solve");
 }
 
@@ -108,6 +109,8 @@ Renderer::~Renderer() {
         mScanAddPipeline->release();
     if (mScatterPipeline)
         mScatterPipeline->release();
+    if (mDensityPipeline)
+        mDensityPipeline->release();
     if (mSolvePipeline)
         mSolvePipeline->release();
     if (mCommandQueue)
@@ -126,9 +129,11 @@ void Renderer::encodeStep(MTL::ComputeCommandEncoder *encoder,
                           bool currentIsA) {
     MTL::Buffer *inPos = currentIsA ? mBuffers.posA : mBuffers.posB;
     MTL::Buffer *inVel = currentIsA ? mBuffers.velA : mBuffers.velB;
+    MTL::Buffer *inDens = currentIsA ? mBuffers.densA : mBuffers.densB;
     MTL::Buffer *inId = currentIsA ? mBuffers.idA : mBuffers.idB;
     MTL::Buffer *outPos = currentIsA ? mBuffers.posB : mBuffers.posA;
     MTL::Buffer *outVel = currentIsA ? mBuffers.velB : mBuffers.velA;
+    MTL::Buffer *outDens = currentIsA ? mBuffers.densB : mBuffers.densA;
     MTL::Buffer *outId = currentIsA ? mBuffers.idB : mBuffers.idA;
 
     const uint32_t n = mBuffers.particleCount;
@@ -188,13 +193,21 @@ void Renderer::encodeStep(MTL::ComputeCommandEncoder *encoder,
     encoder->setBuffer(mBuffers.uniformsBuffer, 0, 9);
     encoder->dispatchThreads(particleGrid, particleGroupSize(mScatterPipeline));
 
+    encoder->setComputePipelineState(mDensityPipeline);
+    encoder->setBuffer(mBuffers.sortedPred, 0, 0);
+    encoder->setBuffer(mBuffers.cellStart, 0, 1);
+    encoder->setBuffer(outDens, 0, 2);
+    encoder->setBuffer(mBuffers.uniformsBuffer, 0, 3);
+    encoder->dispatchThreads(particleGrid, particleGroupSize(mDensityPipeline));
+
     encoder->setComputePipelineState(mSolvePipeline);
     encoder->setBuffer(mBuffers.sortedOld, 0, 0);
     encoder->setBuffer(mBuffers.sortedPred, 0, 1);
     encoder->setBuffer(mBuffers.cellStart, 0, 2);
     encoder->setBuffer(outPos, 0, 3);
     encoder->setBuffer(outVel, 0, 4);
-    encoder->setBuffer(mBuffers.uniformsBuffer, 0, 5);
+    encoder->setBuffer(outDens, 0, 5);
+    encoder->setBuffer(mBuffers.uniformsBuffer, 0, 6);
     encoder->dispatchThreads(particleGrid, particleGroupSize(mSolvePipeline));
 }
 
@@ -238,7 +251,7 @@ void Renderer::encodeRenderPass(MTL::CommandBuffer *commandBuffer,
 }
 
 void Renderer::drawFrame() {
-    if (!mLayer || !mPipelineState || !mPredictPipeline || !mSolvePipeline ||
+    if (!mLayer || !mPipelineState || !mPredictPipeline || !mDensityPipeline || !mSolvePipeline ||
         !mBuffers.particleCount)
         return;
 

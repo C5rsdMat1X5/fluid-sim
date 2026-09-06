@@ -6,24 +6,29 @@ using namespace metal;
 constant float2 kVertices[3] = {float2(-1.7320508f, -1.0f),
                                 float2(1.7320508f, -1.0f), float2(0.0f, 2.0f)};
 
-constant float kJitterAccel = 16.0f;
+constant float kJitterAccel = 200.0f;
 constant float kRelaxationFactor = 0.45f;
 constant float kWallRestitution = 0.8f;
 constant float kWallFriction = 0.98f;
 constant float kDrag = 0.05f;
 constant float kSpeedColorScale = 0.45f;
 
+constant float kStiffness = 10000.0f;
+constant float kTargetDensity = 1.5f;
+constant float kPressureScale = 1000.0f;
+constant float kViscosityScale = 0.01f;
+
 constant float3 kRestColor = float3(0.38f, 0.40f, 0.98f);
 constant float3 kMotionColor = float3(1.00f, 0.40f, 0.45f);
-
-constant float2 kSelfNormal = float2(0.7071f, 0.7071f);
 
 #define SCAN_TG 256
 
 inline int2 cellCoord(float2 p, constant Uniforms &u) {
     float fx = clamp(p.x * u.invCellSize, 0.0f, float(u.gridW) - 1.0f);
     float fy = clamp(p.y * u.invCellSize, 0.0f, float(u.gridH) - 1.0f);
-    return int2(int(fx), int(fy));
+    int cx = clamp(int(fx), 0, int(u.gridW) - 1);
+    int cy = clamp(int(fy), 0, int(u.gridH) - 1);
+    return int2(cx, cy);
 }
 
 inline uint cellIndex(float2 p, constant Uniforms &u) {
@@ -174,11 +179,68 @@ kernel void k_scatter(const device float2 *posIn [[buffer(0)]],
     uint c = cellIn[gid];
     uint remaining =
         atomic_fetch_sub_explicit(&counts[c], 1u, memory_order_relaxed);
+    if (remaining == 0u)
+        return;
+
     uint dst = cellStart[c] + remaining - 1u;
+    if (dst >= uint(u.numParticles))
+        return;
 
     sortedOld[dst] = posIn[gid];
     sortedPred[dst] = predIn[gid];
     sortedId[dst] = idIn[gid];
+}
+
+kernel void k_dens(const device float2 *sortedPred [[buffer(0)]],
+                   const device uint *cellStart [[buffer(1)]],
+                   device float *densOut [[buffer(2)]],
+                   constant Uniforms &u [[buffer(3)]],
+                   uint gid [[thread_position_in_grid]]) {
+    if (gid >= uint(u.numParticles))
+        return;
+
+    const float2 self = sortedPred[gid];
+    const int2 c = cellCoord(self, u);
+    const int cellRadius = max(1, int(ceil(u.smoothRad * u.invCellSize)));
+
+    const int x0 = max(c.x - cellRadius, 0);
+    const int x1 = min(c.x + cellRadius, int(u.gridW) - 1);
+
+    const int y0 = max(c.y - cellRadius, 0);
+    const int y1 = min(c.y + cellRadius, int(u.gridH) - 1);
+
+    float density = 0.0f;
+
+    const float h = u.smoothRad;
+    const float h2 = h * h;
+    const float invH = 1.0f / h;
+    const uint totalCells = uint(u.gridW * u.gridH);
+    const uint numParticles = uint(u.numParticles);
+
+    for (int y = y0; y <= y1; ++y) {
+        const uint rowBase = uint(y * u.gridW);
+        const uint begin = cellStart[rowBase + uint(x0)];
+        const uint endIdx = rowBase + uint(x1) + 1u;
+        const uint end =
+            (endIdx < totalCells) ? cellStart[endIdx] : numParticles;
+
+        if (begin >= end)
+            continue;
+
+        for (uint j = begin; j < end; ++j) {
+            const float2 d = self - sortedPred[j];
+            const float distSqr = dot(d, d);
+
+            if (distSqr < h2) {
+                const float dist = sqrt(distSqr);
+                const float x = 1.0f - (dist * invH);
+                const float x2 = x * x;
+                density += x2 * x2;
+            }
+        }
+    }
+
+    densOut[gid] = max(density, 0.0001f);
 }
 
 kernel void k_solve(const device float2 *sortedOld [[buffer(0)]],
@@ -186,7 +248,8 @@ kernel void k_solve(const device float2 *sortedOld [[buffer(0)]],
                     const device uint *cellStart [[buffer(2)]],
                     device float2 *posOut [[buffer(3)]],
                     device float2 *velOut [[buffer(4)]],
-                    constant Uniforms &u [[buffer(5)]],
+                    const device float *densOut [[buffer(5)]],
+                    constant Uniforms &u [[buffer(6)]],
                     uint gid [[thread_position_in_grid]]) {
     if (gid >= uint(u.numParticles))
         return;
@@ -200,41 +263,92 @@ kernel void k_solve(const device float2 *sortedOld [[buffer(0)]],
     float2 oldPos = sortedOld[gid];
 
     const int2 c = cellCoord(self, u);
-    const int x0 = max(c.x - 1, 0);
-    const int x1 = min(c.x + 1, u.gridW - 1);
-    const int y0 = max(c.y - 1, 0);
-    const int y1 = min(c.y + 1, u.gridH - 1);
+    const int cellRadius = max(1, int(ceil(u.smoothRad * u.invCellSize)));
 
+    const int x0 = max(c.x - cellRadius, 0);
+    const int x1 = min(c.x + cellRadius, int(u.gridW) - 1);
+
+    const int y0 = max(c.y - cellRadius, 0);
+    const int y1 = min(c.y + cellRadius, int(u.gridH) - 1);
+
+    const uint totalCells = uint(u.gridW * u.gridH);
+    const uint numParticles = uint(u.numParticles);
+
+    const float rhoI = max(densOut[gid], 0.0001f);
+    const float pressureI = max(0.0f, kStiffness * (rhoI - kTargetDensity));
+    const float termI = pressureI / (rhoI * rhoI);
+
+    const float h = u.smoothRad;
+    const float maxDist = max(h, collisionDist);
+    const float maxDistSqr = maxDist * maxDist;
+
+    const float2 vi = (sortedPred[gid] - sortedOld[gid]) * u.invDt;
+    const float spikyConst =
+        (-30.0f / (M_PI_F * h * h * h * h * h)) * kPressureScale;
+
+    const float pi_const = 20.0f / (3.0f * M_PI_F * h * h * h * h * h) * kViscosityScale;
+
+    float2 pressureAccel = float2(0.0f);
+    float2 viscosityAccel = float2(0.0f);
     float2 correction = float2(0.0f);
 
     for (int y = y0; y <= y1; ++y) {
         const uint rowBase = uint(y * u.gridW);
         const uint begin = cellStart[rowBase + uint(x0)];
-        const uint end = cellStart[rowBase + uint(x1) + 1u];
+        const uint endIdx = rowBase + uint(x1) + 1u;
+        const uint end =
+            (endIdx < totalCells) ? cellStart[endIdx] : numParticles;
 
-#pragma unroll(4)
+        if (begin >= end)
+            continue;
+
         for (uint j = begin; j < end; ++j) {
-            float2 d = self - sortedPred[j];
-            float distSqr = dot(d, d);
+            if (j == gid)
+                continue;
 
-            float invDist = rsqrt(max(distSqr, 1e-12f));
-            float penetration = collisionDist - distSqr * invDist;
-            float2 n = (distSqr > 1e-12f) ? (d * invDist) : kSelfNormal;
+            const float2 d = self - sortedPred[j];
+            const float distSqr = dot(d, d);
 
-            correction += (distSqr < collisionDistSqr)
-                              ? (n * (penetration * kCoeff))
-                              : float2(0.0f);
+            if (distSqr >= maxDistSqr)
+                continue;
+
+            const float invDist = rsqrt(distSqr);
+            const float dist = distSqr * invDist;
+            const float2 n = d * invDist;
+
+            if (dist < h) {
+                const float rhoJ = max(densOut[j], 0.0001f);
+                const float pressureJ =
+                    max(0.0f, kStiffness * (rhoJ - kTargetDensity));
+                const float termJ = pressureJ / (rhoJ * rhoJ);
+
+                const float hMinusR = h - dist;
+                const float kernelGrad = spikyConst * (hMinusR * hMinusR);
+
+                pressureAccel -= ((termI + termJ) * kernelGrad) * n;
+
+                const float2 vj = (sortedPred[j] - sortedOld[j]) * u.invDt;
+                const float viscosityLaplacian = pi_const * (h - dist);
+        
+                viscosityAccel +=
+                    (vj - vi) /
+                    rhoJ *
+                    viscosityLaplacian;
+            }
+
+            if (distSqr < collisionDistSqr) {
+                const float penetration = collisionDist - dist;
+                correction += n * (penetration * kCoeff);
+            }
         }
     }
-
-    correction -= kSelfNormal * (collisionDist * kCoeff);
 
     float corrLenSqr = dot(correction, correction);
     correction *= (corrLenSqr > collisionDistSqr)
                       ? (collisionDist * rsqrt(corrLenSqr))
                       : 1.0f;
 
-    float2 pos = self + correction;
+    float2 pos = self + pressureAccel * (u.subDt * u.subDt) + correction + viscosityAccel;
 
     const float minX = radius;
     const float maxX = float(u.windowWidth) - radius;
@@ -245,6 +359,7 @@ kernel void k_solve(const device float2 *sortedOld [[buffer(0)]],
     bool hitX = (cx != pos.x);
     oldPos.x = hitX ? (cx + (cx - oldPos.x) * kWallRestitution) : oldPos.x;
     pos.x = cx;
+    pos.y = hitX ? (oldPos.y + (pos.y - oldPos.y) * kWallFriction) : pos.y;
 
     float cy = clamp(pos.y, minY, maxY);
     bool hitY = (cy != pos.y);
@@ -283,16 +398,14 @@ vertex VertexOut vertex_main(const device float2 *positions [[buffer(0)]],
         fma(localPos, float2(uniforms.particleScale), clipPos), 0.0f, 1.0f);
     out.localPosition = localPos;
 
-    out.speed =
-        clamp(length(vel) / (uniforms.maxSpeed * kSpeedColorScale), 0.0f, 1.0f);
+    float maxSpeedNorm = max(uniforms.maxSpeed * kSpeedColorScale, 1e-4f);
+    out.speed = clamp(length(vel) / maxSpeedNorm, 0.0f, 1.0f);
     return out;
 }
 
 fragment float4 fragment_main(VertexOut in [[stage_in]]) {
     float distSq = dot(in.localPosition, in.localPosition);
-
     float3 color = mix(kRestColor, kMotionColor, in.speed);
-    float alpha = smoothstep(1.0f, 0.85f, distSq);
-
+    float alpha = 1.0f - smoothstep(0.85f, 1.0f, distSq);
     return float4(color, alpha);
 }

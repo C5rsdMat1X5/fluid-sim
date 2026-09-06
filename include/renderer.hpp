@@ -30,6 +30,7 @@ class Renderer {
     MTL::ComputePipelineState *mScanBlocksPipeline = nullptr;
     MTL::ComputePipelineState *mScanAddPipeline = nullptr;
     MTL::ComputePipelineState *mScatterPipeline = nullptr;
+    MTL::ComputePipelineState *mDensityPipeline = nullptr;
     MTL::ComputePipelineState *mSolvePipeline = nullptr;
 
     CA::MetalLayer *mLayer = nullptr;

@@ -44,6 +44,7 @@ Uniforms buildUniforms() {
     uniforms.particleScale = {kParticleRadius / (0.5f * gWindowWidth),
                               kParticleRadius / (0.5f * gWindowHeight)};
     uniforms.radius = kParticleRadius;
+    uniforms.smoothRad = kParticleSmoothRad;
     uniforms.subDt = kFixedDt / static_cast<float>(kSimulationIterations);
     uniforms.invDt = 1.0f / uniforms.subDt;
     uniforms.gravity = kGravity;
@@ -61,9 +62,10 @@ Uniforms buildUniforms() {
 }
 
 void layoutParticleGrid(int particleCount, std::vector<vec2> &pos,
-                        std::vector<vec2> &vel, std::vector<uint32_t> &ids) {
+                        std::vector<vec2> &vel, std::vector<float> &dens, std::vector<uint32_t> &ids) {
     pos.resize(particleCount);
     vel.resize(particleCount);
+    dens.resize(particleCount);
     ids.resize(particleCount);
 
     int squareSide = static_cast<int>(
@@ -107,18 +109,22 @@ RenderBuffers initSimulation(MTL::Device *device, int particleCount) {
     gState.particleCount = particleCount;
 
     std::vector<vec2> pos, vel;
+    std::vector<float> dens;
     std::vector<uint32_t> ids;
-    layoutParticleGrid(particleCount, pos, vel, ids);
+    layoutParticleGrid(particleCount, pos, vel, dens, ids);
 
     const std::size_t vec2BufSize = particleCount * sizeof(vec2);
+    const std::size_t floatBufSize = particleCount * sizeof(float);
     const std::size_t idBufSize = particleCount * sizeof(uint32_t);
 
     RenderBuffers buffers{};
     buffers.posA = makeBuffer(device, pos.data(), vec2BufSize);
     buffers.velA = makeBuffer(device, vel.data(), vec2BufSize);
+    buffers.densA = makeBuffer(device, dens.data(), floatBufSize);
     buffers.idA = makeBuffer(device, ids.data(), idBufSize);
     buffers.posB = makeBuffer(device, pos.data(), vec2BufSize);
     buffers.velB = makeBuffer(device, vel.data(), vec2BufSize);
+    buffers.densB = makeBuffer(device, dens.data(), floatBufSize);
     buffers.idB = makeBuffer(device, ids.data(), idBufSize);
 
     buffers.gridW =

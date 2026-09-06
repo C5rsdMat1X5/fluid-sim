@@ -8,10 +8,10 @@ using vec2 = simd::float2;
 #endif
 
 struct Uniforms {
-
     vec2 particleScale;
 
     float radius;
+    float smoothRad;
     float subDt;
     float invDt;
     float gravity;
